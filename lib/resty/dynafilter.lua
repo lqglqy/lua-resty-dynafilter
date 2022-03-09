@@ -2,8 +2,9 @@ local ffi      = require("ffi")
 local ffi_cdef = ffi.cdef
 local ffi_load = ffi.load
 local ffi_new  = ffi.new
+local cjson = require("cjson")
 
-local dynafilter = ffi_load "dynafilter"
+local dynafilter = ffi_load "dynafilter_ffi"
 
 ffi_cdef [[
     typedef struct dynafilter_scheme dynafilter_scheme_t;
@@ -22,12 +23,17 @@ ffi_cdef [[
         size_t length;
     } dynafilter_externally_allocated_str_t;
 
+    typedef struct {
+        const unsigned char *data;
+        size_t length;
+    } dynafilter_externally_allocated_byte_arr_t;
+
     typedef enum {
         DF_TYPE_IP,
         DF_TYPE_BYTES,
         DF_TYPE_INT,
         DF_TYPE_BOOL,
-    }
+    } dynafilter_type_t;
 
     dynafilter_scheme_t *dynafilter_create_scheme();
     void dynafilter_free_scheme(dynafilter_scheme_t *scheme);
@@ -51,7 +57,7 @@ ffi_cdef [[
     void dynafilter_add_bytes_value_to_match_fields(
         dynafilter_match_fields_t *fs,
         dynafilter_externally_allocated_str_t name,
-        dynafilter_externally_allocated_byte_arr_t value
+        dynafilter_externally_allocated_str_t value
     );
 
     dynafilter_rule_filter_t *dynafilter_compile_rule_filter(
@@ -71,7 +77,7 @@ ffi_cdef [[
         dynafilter_prefilter_t *pf
     );
 
-    dynafilter_rust_allocated_str_t *dynafilter_match(
+    dynafilter_rust_allocated_str_t dynafilter_match(
         const dynafilter_scheme_t *scheme,
         dynafilter_rule_filter_t *rf,
         dynafilter_prefilter_t *pf,
@@ -79,8 +85,6 @@ ffi_cdef [[
     );
 
     void dynafilter_free_string(dynafilter_rust_allocated_str_t str);
-
-
 ]]
 
 local _M = {
@@ -89,7 +93,7 @@ local _M = {
         BYTES = ffi.C.DF_TYPE_BYTES,
         IP    = ffi.C.DF_TYPE_IP,
         BOOL  = ffi.C.DF_TYPE_BOOL,
-        INT   = ffi.C.DF_INT,
+        INT   = ffi.C.DF_TYPE_INT
     }
 }
 
@@ -99,7 +103,7 @@ local mt = {
 
 function _M:new(args)
     local args   = args or {}
-    local fields = args or {}
+    local fields = args.fields or {}
     local rules  = args.rules or ""
     local fields_map = {}
 
@@ -108,7 +112,7 @@ function _M:new(args)
         return nil, err
     end
 
-    local rf, err = self:create_rule_filter(scheme, args.rules)
+    local rf, err = self:create_rule_filter(scheme, cjson.encode(args.rules))
     if (rf == nil) then
         return nil, err
     end
@@ -124,6 +128,7 @@ function _M:new(args)
         pre_filter = pf,
         fields_map = fields_map
     }
+    ngx.log(ngx.ERR, "fields_map: ", cjson.encode(fields_map))
     return setmetatable(self, mt)
 end
 
@@ -141,6 +146,7 @@ end
 
 function _M:create_rule_filter(scheme, rules_string)
     
+    ngx.log(ngx.ERR, "rule string: ", rules_string)
     local rf = ffi_new("dynafilter_rule_filter_t*")
     local rf = dynafilter.dynafilter_compile_rule_filter(scheme, self:dynafilter_string(rules_string))
 
@@ -158,16 +164,17 @@ function _M:init_scheme(fields, fields_map)
     end
 
     for name, type in pairs(fields) do
+        ngx.log(ngx.ERR, "type: ", cjson.encode(type))
         self:add_type_field_to_scheme(scheme, fields_map, name, type)
     end
 
-    self:dynafilter_add_prefilter_function_to_scheme(scheme)
+    self:add_filter_function(scheme)
 
     return scheme
 end
 
 function _M:add_filter_function(scheme)
-    dynafilter.dynafilter_add_filter_function(scheme) 
+    dynafilter.dynafilter_add_prefilter_function_to_scheme(scheme) 
 end
 
 function _M:add_type_field_to_scheme(scheme, fields_map, name, type)
@@ -202,6 +209,7 @@ function _M:exec(values)
     end
 
     for name, value in pairs(values) do
+        --ngx.log(ngx.ERR, "add fields value: ", value)
         local result, err = self:add_value_to_execution_fields(fds, {name = name, value = value})
         if not result then
             return nil, err
@@ -219,7 +227,12 @@ function _M:free_execution_fields(fields)
 end
 
 function _M:match(fields)
+    local match_result = ffi_new("dynafilter_rust_allocated_str_t")
     local match_result = dynafilter.dynafilter_match(self.scheme, self.rule_filter, self.pre_filter, fields)
+    --local mr_str = ffi.string(match_result.data, match_result.length)
+    --local mr = ffi.new('dynafilter_rust_allocated_str_t')
+
+    --ffi.copy(mr, match_result, ffi.sizeof('dynafilter_rust_allocated_str_t'))
     return match_result
 end
 
@@ -230,8 +243,10 @@ function _M:add_value_to_execution_fields(fs, value)
     end
 
     if (field == self.types.BYTES) then
-        dynafilter.dynafilter_add_bytes_value_to_match_fields(fs, self:dynafilter_string(value.name),
-            self.dynafilter_string(value.value))
+        --ngx.log(ngx.ERR, "add fields value: ", value.value)
+        dynafilter.dynafilter_add_bytes_value_to_match_fields(fs, 
+            self:dynafilter_string(value.name),
+            self:dynafilter_string(value.value))
     end
 
     return true
@@ -255,3 +270,5 @@ function _M:create_match_fields()
 
     return fields
 end
+
+return _M
