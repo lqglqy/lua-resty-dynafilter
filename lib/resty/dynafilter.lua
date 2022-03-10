@@ -164,7 +164,7 @@ function _M:init_scheme(fields, fields_map)
     end
 
     for name, type in pairs(fields) do
-        ngx.log(ngx.ERR, "type: ", cjson.encode(type))
+        --ngx.log(ngx.ERR, "type: ", cjson.encode(type))
         self:add_type_field_to_scheme(scheme, fields_map, name, type)
     end
 
@@ -193,7 +193,9 @@ end
 
 function _M:create_scheme()
     local scheme = ffi_new("dynafilter_scheme_t*")
+    ngx.log(ngx.ERR, "ffi new scheme: "..tostring(scheme))
     local scheme = dynafilter.dynafilter_create_scheme()
+    ngx.log(ngx.ERR, "create  scheme: "..tostring(scheme))
 
     if (scheme == nil) then
         return nil, "could not create scheme"
@@ -217,23 +219,18 @@ function _M:exec(values)
     end
 
     local match_result = self:match(fds)
-    self:free_execution_fields(fds)
+    self:match_fields_clear(fds)
 
     return match_result
-end
-
-function _M:free_execution_fields(fields)
-    dynafilter.dynafilter_free_match_fields(fields)
 end
 
 function _M:match(fields)
     local match_result = ffi_new("dynafilter_rust_allocated_str_t")
     local match_result = dynafilter.dynafilter_match(self.scheme, self.rule_filter, self.pre_filter, fields)
-    --local mr_str = ffi.string(match_result.data, match_result.length)
-    --local mr = ffi.new('dynafilter_rust_allocated_str_t')
+    local res_str = ffi.string(match_result.data, match_result.length)
+    dynafilter.dynafilter_free_string(match_result)
 
-    --ffi.copy(mr, match_result, ffi.sizeof('dynafilter_rust_allocated_str_t'))
-    return match_result
+    return res_str
 end
 
 function _M:add_value_to_execution_fields(fs, value)
@@ -269,6 +266,38 @@ function _M:create_match_fields()
     end
 
     return fields
+end
+
+function _M:clear()
+    if self.pre_filter then
+        self:free_prefilter(self.pre_filter)
+        self.pre_filter = nil
+    end
+    if self.rule_filter then
+        self:free_rule_filter(self.rule_filter)
+        self.rule_filter = nil
+    end
+    if self.scheme then
+        self:free_scheme(self.scheme)
+        self.scheme = nil
+    end
+end
+
+function _M:free_scheme(scheme)
+    dynafilter.dynafilter_free_scheme(scheme)
+end
+
+function _M:free_rule_filter(rf)
+    dynafilter.dynafilter_rule_filter_free(rf)
+end
+
+function _M:free_prefilter(pf)
+    ngx.log(ngx.ERR, "free prefilter")
+    dynafilter.dynafilter_prefilter_free(pf)
+end
+
+function _M:match_fields_clear(mf)
+    dynafilter.dynafilter_free_match_fields(mf)
 end
 
 return _M
